@@ -293,6 +293,35 @@ static void inline nui_rmi4_proc_fngr_move(unsigned int x, unsigned int y)
 
 	return;
 }
+
+static void reset_all_touch(struct synaptics_rmi4_data *rmi4_data) {
+	unsigned char finger;
+
+	prev_status = 0;
+	prev_x = 0;
+	prev_y = 0;
+	for (finger = 0; finger < 5; finger++) {
+		input_mt_slot(rmi4_data->input_dev, finger);
+		input_mt_report_slot_state(rmi4_data->input_dev,
+				MT_TOOL_FINGER, true);
+		input_report_abs(rmi4_data->input_dev,
+				ABS_MT_POSITION_X, 0);
+		input_report_abs(rmi4_data->input_dev,
+				ABS_MT_POSITION_Y, 0);
+		
+	}
+	for (finger = 0; finger < 5; finger++) {
+		rmi4_data->finger_state[finger].x = 0;
+		rmi4_data->finger_state[finger].y = 0;
+		rmi4_data->finger_state[finger].wx = 0;
+		rmi4_data->finger_state[finger].wy = 0;
+		rmi4_data->finger_state[finger].status = false;
+		input_mt_slot(rmi4_data->input_dev, finger);
+		input_mt_report_slot_state(rmi4_data->input_dev,
+				MT_TOOL_FINGER, false);
+	}
+	input_sync(rmi4_data->input_dev);
+}
 //end ngxson
 
 static int synaptics_rmi4_i2c_read(struct synaptics_rmi4_data *rmi4_data,
