@@ -112,7 +112,6 @@ static unsigned short data_addr;
 static unsigned short ctrl_addr;
 static unsigned char data_reg_blk_size;
 bool nui_suspend = false;
-static unsigned char work_mode = 0;
 
 static cputime64_t tap_time_pre = 0;
 static int x_pre = 0, y_pre = 0;
@@ -1246,13 +1245,6 @@ static int synaptics_rmi4_irq_enable(struct synaptics_rmi4_data *rmi4_data,
 	int retval = 0;
 	unsigned char intr_status;
 	int irq_flags;
-
-	if(scr_suspended) {
-		work_mode = 1;
-	} else {
-		if(hn_enable) work_mode = 2;
-		else work_mode = 0;
-	}
 	
 	if (enable) {
 		if (rmi4_data->irq_enabled)
@@ -1280,8 +1272,6 @@ static int synaptics_rmi4_irq_enable(struct synaptics_rmi4_data *rmi4_data,
 		rmi4_data->irq_enabled = true;
 	} else {
 		if (rmi4_data->irq_enabled) {
-			printk("ngxson: synaptics disable irq\n");
-			disable_irq(rmi4_data->irq);
 			free_irq(rmi4_data->irq, rmi4_data);
 			rmi4_data->irq_enabled = false;
 		}
