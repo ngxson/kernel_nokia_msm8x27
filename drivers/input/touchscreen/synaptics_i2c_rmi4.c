@@ -140,7 +140,7 @@ static cputime64_t hn_time;
 //
 //static bool nui_enabled_irq = false;
 static bool block_gesture = false;
-
+static unsigned char prev_status;
 
 //for keypress
 void inline btn_press(int i, bool b) {
@@ -934,6 +934,13 @@ static int synaptics_rmi4_f11_abs_report(struct synaptics_rmi4_data *rmi4_data,
 				MT_TOOL_FINGER, finger_status != 0);
 #endif
 
+		if (finger == 0 && scr_suspended) {
+			if(!prev_status && finger_status) nui_rmi4_proc_fngr_press(x, y);
+			else if(prev_status && finger_status) nui_rmi4_proc_fngr_move(x, y);
+			else if(prev_status && !finger_status) nui_rmi4_proc_fngr_release(x, y);
+			prev_status = finger_status;
+		}
+
 		if (finger_status) {
 			data_offset = data_addr +
 					num_of_finger_status_regs +
@@ -1237,34 +1244,45 @@ static int synaptics_rmi4_irq_enable(struct synaptics_rmi4_data *rmi4_data,
 		bool enable)
 {
 	int retval = 0;
-	unsigned char *intr_status;
+	unsigned char intr_status;
+	int irq_flags;
 
+	if(scr_suspended) {
+		work_mode = 1;
+	} else {
+		if(hn_enable) work_mode = 2;
+		else work_mode = 0;
+	}
+	
 	if (enable) {
 		if (rmi4_data->irq_enabled)
 			return retval;
 
-		intr_status = kzalloc(rmi4_data->num_of_intr_regs, GFP_KERNEL);
-		if (!intr_status) {
-			dev_err(&rmi4_data->i2c_client->dev,
-					"%s: Failed to alloc memory\n",
-					__func__);
-			return -ENOMEM;
-		}
 		/* Clear interrupts first */
 		retval = synaptics_rmi4_i2c_read(rmi4_data,
 				rmi4_data->f01_data_base_addr + 1,
-				intr_status,
+				&intr_status,
 				rmi4_data->num_of_intr_regs);
-		kfree(intr_status);
 		if (retval < 0)
 			return retval;
 
-		enable_irq(rmi4_data->irq);
+		irq_flags = IRQF_TRIGGER_FALLING | IRQF_ONESHOT | IRQF_NO_SUSPEND | IRQF_EARLY_RESUME;	
+
+		printk("ngxson: synaptics enable irq\n");
+		
+		retval = request_threaded_irq(rmi4_data->irq, NULL,
+				synaptics_rmi4_irq, irq_flags, DRIVER_NAME, rmi4_data);
+		if (retval < 0) {
+			printk( "ITUCH : Device(%s), Failed to create irq thread\n", dev_name( &rmi4_data->i2c_client->dev ) );
+			return retval;
+		}
 
 		rmi4_data->irq_enabled = true;
 	} else {
 		if (rmi4_data->irq_enabled) {
+			printk("ngxson: synaptics disable irq\n");
 			disable_irq(rmi4_data->irq);
+			free_irq(rmi4_data->irq, rmi4_data);
 			rmi4_data->irq_enabled = false;
 		}
 	}
@@ -2683,6 +2701,29 @@ static int fb_notifier_callback(struct notifier_block *self,
 	return 0;
 }
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
+static void reset_device(struct synaptics_rmi4_data *rmi4_data) {
+
+		rmi4_data->touch_stopped = true;
+		wake_up(&rmi4_data->wait);
+		synaptics_rmi4_irq_enable(rmi4_data, false);
+		synaptics_rmi4_sensor_sleep(rmi4_data);
+	
+		if (rmi4_data->full_pm_cycle) {
+			synaptics_rmi4_suspend(&(rmi4_data->input_dev->dev));
+		}
+		msleep(2);
+		reset_all_touch(rmi4_data);
+		msleep(2);
+		if (rmi4_data->full_pm_cycle) {
+			synaptics_rmi4_resume(&(rmi4_data->input_dev->dev));
+		}
+		synaptics_rmi4_sensor_wake(rmi4_data);
+		rmi4_data->touch_stopped = false;
+		synaptics_rmi4_irq_enable(rmi4_data, true);
+
+		return;
+}
+
  /**
  * synaptics_rmi4_early_suspend()
  *
@@ -2698,14 +2739,36 @@ static void synaptics_rmi4_early_suspend(struct early_suspend *h)
 			container_of(h, struct synaptics_rmi4_data,
 			early_suspend);
 
-	rmi4_data->touch_stopped = true;
-	wake_up(&rmi4_data->wait);
-	synaptics_rmi4_irq_enable(rmi4_data, false);
-	synaptics_rmi4_sensor_sleep(rmi4_data);
-
-	if (rmi4_data->full_pm_cycle)
-		synaptics_rmi4_suspend(&(rmi4_data->input_dev->dev));
-
+	//printk( "ngxson: debug synaptics_rmi4_early_suspend\n");
+	scr_suspended = true;
+	if((dt2w_switch>0)||(s2w_switch>0)) nui_report_input = false;
+	
+	if (no_suspend_touch) {
+		s2w_reset();
+		doubletap2wake_reset();
+		reset_device(rmi4_data);
+		synaptics_rmi4_irq_enable(rmi4_data, true);
+		//enable_irq(rmi4_data->irq);
+		enable_irq_wake(rmi4_data->irq);
+		//printk( "ngxson: debug dt2w on\n");
+		if (rmi4_data->full_pm_cycle)
+			synaptics_rmi4_resume(&(rmi4_data->input_dev->dev));
+	
+		if (rmi4_data->sensor_sleep == true) {
+			synaptics_rmi4_sensor_wake(rmi4_data);
+			rmi4_data->touch_stopped = false;
+		}
+	} else {
+		//printk( "ngxson: debug synaptics_rmi4_early_suspend\n");
+		ngxson_touch_slept = true;
+		rmi4_data->touch_stopped = true;
+		wake_up(&rmi4_data->wait);
+		synaptics_rmi4_irq_enable(rmi4_data, false);
+		synaptics_rmi4_sensor_sleep(rmi4_data);
+	
+		if (rmi4_data->full_pm_cycle)
+			synaptics_rmi4_suspend(&(rmi4_data->input_dev->dev));
+	}
 	return;
 }
 
@@ -2724,15 +2787,27 @@ static void synaptics_rmi4_late_resume(struct early_suspend *h)
 			container_of(h, struct synaptics_rmi4_data,
 			early_suspend);
 
-	if (rmi4_data->full_pm_cycle)
-		synaptics_rmi4_resume(&(rmi4_data->input_dev->dev));
-
-	if (rmi4_data->sensor_sleep == true) {
-		synaptics_rmi4_sensor_wake(rmi4_data);
-		rmi4_data->touch_stopped = false;
-		synaptics_rmi4_irq_enable(rmi4_data, true);
+	//printk( "ngxson: debug synaptics_rmi4_late_resume\n");
+	scr_suspended = false;
+	if(!nui_report_input) nui_report_input = true;
+	if ((no_suspend_touch) && (!ngxson_touch_slept)) {
+		//printk( "ngxson: debug dt2w on\n");
+		doubletap2wake_reset();
+		//if(s2w_oneswipe == 0)
+		reset_device(rmi4_data);
+		disable_irq_wake(rmi4_data->irq);
+	} else {
+		//printk( "ngxson: debug synaptics_rmi4_late_resume\n");
+		ngxson_touch_slept = false;
+		if (rmi4_data->full_pm_cycle)
+			synaptics_rmi4_resume(&(rmi4_data->input_dev->dev));
+	
+		if (rmi4_data->sensor_sleep == true) {
+			synaptics_rmi4_sensor_wake(rmi4_data);
+			rmi4_data->touch_stopped = false;
+			synaptics_rmi4_irq_enable(rmi4_data, true);
+		}
 	}
-
 	return;
 }
 #endif
