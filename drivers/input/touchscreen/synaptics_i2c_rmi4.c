@@ -93,6 +93,209 @@ enum device_status {
 
 #define RMI4_GPIO_SLEEP_LOW_US 10000
 
+//ngxson_dt2w
+#include <linux/wakelock.h>
+#include <linux/hrtimer.h>
+#include <asm-generic/cputime.h>
+#include <linux/input/doubletap2wake.h>
+
+#define D2W_PWRKEY_DUR 30
+#define DT2W_TIMEOUT_MAX         400
+#define DT2W_TIMEOUT_MIN         80
+#define DT2W_DELTA_X               120
+#define DT2W_DELTA_Y               70
+#define DT2W_SCREEN_MIDDLE         550
+#define S2W_TIMEOUT_MAX         1500
+#define S2W_DELTA_X               250
+
+static unsigned short data_addr;
+static unsigned short ctrl_addr;
+static unsigned char data_reg_blk_size;
+bool nui_suspend = false;
+static unsigned char work_mode = 0;
+
+static cputime64_t tap_time_pre = 0;
+static int x_pre = 0, y_pre = 0;
+
+static struct input_dev * doubletap2wake_pwrdev;
+static DEFINE_MUTEX(pwrkeyworklock);
+static DEFINE_MUTEX(irqdt2w);
+static struct wake_lock dt2w_wake_lock;
+static bool dt2w_ok = false;
+static bool dt2w_pressed = false;
+static bool dt2w_got_xy = false;
+static unsigned int dt2w_get_x = 0;
+static unsigned int dt2w_get_y = 0;
+//s2w
+static cputime64_t s2w_tap_time_pre;
+static unsigned int s2w_x = 0;
+static bool s2w_finger = false;
+static bool s2w_scron = false;
+static bool scr_suspended = false;
+//hide nav
+static bool hn_active;
+static bool hn_detecting;
+static unsigned char hn_btn;
+static cputime64_t hn_time;
+//
+//static bool nui_enabled_irq = false;
+static bool block_gesture = false;
+
+
+//for keypress
+void inline btn_press(int i, bool b) {
+	if(b) {
+		input_event(doubletap2wake_pwrdev, EV_KEY, i, 1);
+		input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
+	} else {
+		input_event(doubletap2wake_pwrdev, EV_KEY, i, 0);
+		input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
+	}
+}
+
+//ngxson_dt2w
+static void doubletap2wake_presspwr(struct work_struct * doubletap2wake_presspwr_work) {
+	if (!mutex_trylock(&pwrkeyworklock))
+		return;
+	vibrate(70);
+	input_event(doubletap2wake_pwrdev, EV_KEY, KEY_POWER, 1);
+	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
+	msleep(D2W_PWRKEY_DUR);
+	input_event(doubletap2wake_pwrdev, EV_KEY, KEY_POWER, 0);
+	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
+	//msleep(D2W_PWRKEY_DUR);
+	mutex_unlock(&pwrkeyworklock);
+	return;
+}
+static DECLARE_WORK(doubletap2wake_presspwr_work, doubletap2wake_presspwr);
+
+/* PowerKey trigger */
+static void inline doubletap2wake_pwrtrigger(void) {
+	if(!block_gesture)
+		schedule_work(&doubletap2wake_presspwr_work);
+	return;
+}
+
+void inline doubletap2wake_reset(void) {
+	//printk( "ngxson : dt2w doubletap2wake_reset\n");
+	tap_time_pre = 0;
+	x_pre = 0;
+	y_pre = 0;
+}
+
+static void detect_doubletap2wake(int x, int y)
+{
+	//printk("[ngxson] [DT2W] dt2w x=%d y=%d\n", x, y);
+	if (tap_time_pre == 0) {
+		tap_time_pre = ktime_to_ms(ktime_get());
+		x_pre = x;
+		y_pre = y;
+	} else if (((ktime_to_ms(ktime_get()) - tap_time_pre) > DT2W_TIMEOUT_MAX) ||
+			((ktime_to_ms(ktime_get()) - tap_time_pre) < DT2W_TIMEOUT_MIN)) {
+		tap_time_pre = ktime_to_ms(ktime_get());
+		x_pre = x;
+		y_pre = y;
+	} else if (dt2w_switch == 2) { /* Detect half screen */
+		if ((((abs(x - x_pre) < DT2W_DELTA_X) && (abs(y - y_pre) < DT2W_DELTA_Y))
+						|| (x_pre == 0 && y_pre == 0)) 
+						&& ((y > DT2W_SCREEN_MIDDLE) && (y_pre > DT2W_SCREEN_MIDDLE))) {
+			doubletap2wake_reset();
+			doubletap2wake_pwrtrigger();
+		} else {
+			tap_time_pre = ktime_to_ms(ktime_get());
+			x_pre = x;
+			y_pre = y;
+		}
+	} else {
+		if (((abs(x - x_pre) < DT2W_DELTA_X) && (abs(y - y_pre) < DT2W_DELTA_Y))
+						|| (x_pre == 0 && y_pre == 0)) {
+			doubletap2wake_reset();
+			doubletap2wake_pwrtrigger();
+		} else {
+			tap_time_pre = ktime_to_ms(ktime_get());
+			x_pre = x;
+			y_pre = y;
+		}
+	}
+} //detect_doubletap2wake
+//end
+
+//s2w
+void inline s2w_reset(void) {
+	s2w_tap_time_pre = 0;
+	s2w_x = 0;
+	s2w_finger = false;
+}
+//end
+
+static void inline nui_rmi4_proc_fngr_press(unsigned int x, unsigned int y)
+{
+	if (dt2w_switch) {
+			dt2w_pressed = true;
+			if(((x) <100) || ((x)>900) 
+					|| ((y)<50) || ((y) >950)) {
+					/* Prevent sliding from screen edge */
+				doubletap2wake_reset();
+				dt2w_ok = false;
+			} else {
+				dt2w_get_x = x;
+				dt2w_get_y = y;
+				dt2w_ok = true;
+			}
+	}
+	//s2w
+	if((s2w_switch)) {
+		if(!s2w_finger) {
+			if(((y) < 950)) {
+				s2w_reset();
+			} else {
+				s2w_finger = true;
+				s2w_tap_time_pre = ktime_to_ms(ktime_get());
+				s2w_x = x;
+				s2w_scron = false;
+			}
+		}
+	}
+	return;
+}
+
+static void inline nui_rmi4_proc_fngr_release(unsigned int x, unsigned int y)
+{
+	if (dt2w_switch) {
+			dt2w_got_xy = true;
+			if (!dt2w_pressed) detect_doubletap2wake((x), (y));
+			else if (dt2w_ok) {
+				detect_doubletap2wake(dt2w_get_x, dt2w_get_y);
+				dt2w_ok = false;
+				dt2w_pressed = false;
+			}
+	}
+	//s2w
+	if (s2w_finger){ 
+		s2w_reset();
+	}
+
+	return;
+}
+
+static void inline nui_rmi4_proc_fngr_move(unsigned int x, unsigned int y)
+{
+	if(s2w_finger) {
+		if(!s2w_scron) {
+			if ((abs(x - s2w_x) < S2W_DELTA_X) && (y > 450) &&
+					((ktime_to_ms(ktime_get()) - s2w_tap_time_pre) < S2W_TIMEOUT_MAX) ) {
+				if (y < 750) {
+					s2w_scron = true;
+					doubletap2wake_pwrtrigger();
+				}
+			} else s2w_reset();
+		}
+	}
+
+	return;
+}
+//end ngxson
+
 static int synaptics_rmi4_i2c_read(struct synaptics_rmi4_data *rmi4_data,
 		unsigned short addr, unsigned char *data,
 		unsigned short length);
