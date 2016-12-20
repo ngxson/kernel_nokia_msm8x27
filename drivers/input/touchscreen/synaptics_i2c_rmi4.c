@@ -108,9 +108,6 @@ enum device_status {
 #define S2W_TIMEOUT_MAX         1500
 #define S2W_DELTA_X               250
 
-static unsigned short data_addr;
-static unsigned short ctrl_addr;
-static unsigned char data_reg_blk_size;
 bool nui_suspend = false;
 
 static cputime64_t tap_time_pre = 0;
@@ -119,7 +116,7 @@ static int x_pre = 0, y_pre = 0;
 static struct input_dev * doubletap2wake_pwrdev;
 static DEFINE_MUTEX(pwrkeyworklock);
 static DEFINE_MUTEX(irqdt2w);
-static struct wake_lock dt2w_wake_lock;
+//static struct wake_lock dt2w_wake_lock;
 static bool dt2w_ok = false;
 static bool dt2w_pressed = false;
 static bool dt2w_got_xy = false;
@@ -131,11 +128,6 @@ static unsigned int s2w_x = 0;
 static bool s2w_finger = false;
 static bool s2w_scron = false;
 static bool scr_suspended = false;
-//hide nav
-static bool hn_active;
-static bool hn_detecting;
-static unsigned char hn_btn;
-static cputime64_t hn_time;
 //
 //static bool nui_enabled_irq = false;
 static bool block_gesture = false;
@@ -156,7 +148,7 @@ void inline btn_press(int i, bool b) {
 static void doubletap2wake_presspwr(struct work_struct * doubletap2wake_presspwr_work) {
 	if (!mutex_trylock(&pwrkeyworklock))
 		return;
-	vibrate(70);
+	//vibrate(70);
 	input_event(doubletap2wake_pwrdev, EV_KEY, KEY_POWER, 1);
 	input_event(doubletap2wake_pwrdev, EV_SYN, 0, 0);
 	msleep(D2W_PWRKEY_DUR);
@@ -292,35 +284,6 @@ static void inline nui_rmi4_proc_fngr_move(unsigned int x, unsigned int y)
 	}
 
 	return;
-}
-
-static void reset_all_touch(struct synaptics_rmi4_data *rmi4_data) {
-	unsigned char finger;
-
-	prev_status = 0;
-	prev_x = 0;
-	prev_y = 0;
-	for (finger = 0; finger < 5; finger++) {
-		input_mt_slot(rmi4_data->input_dev, finger);
-		input_mt_report_slot_state(rmi4_data->input_dev,
-				MT_TOOL_FINGER, true);
-		input_report_abs(rmi4_data->input_dev,
-				ABS_MT_POSITION_X, 0);
-		input_report_abs(rmi4_data->input_dev,
-				ABS_MT_POSITION_Y, 0);
-		
-	}
-	for (finger = 0; finger < 5; finger++) {
-		rmi4_data->finger_state[finger].x = 0;
-		rmi4_data->finger_state[finger].y = 0;
-		rmi4_data->finger_state[finger].wx = 0;
-		rmi4_data->finger_state[finger].wy = 0;
-		rmi4_data->finger_state[finger].status = false;
-		input_mt_slot(rmi4_data->input_dev, finger);
-		input_mt_report_slot_state(rmi4_data->input_dev,
-				MT_TOOL_FINGER, false);
-	}
-	input_sync(rmi4_data->input_dev);
 }
 //end ngxson
 
@@ -2720,6 +2683,35 @@ static int fb_notifier_callback(struct notifier_block *self,
 	return 0;
 }
 #elif defined(CONFIG_HAS_EARLYSUSPEND)
+static void reset_all_touch(struct synaptics_rmi4_data *rmi4_data) {
+	unsigned char finger;
+
+	prev_status = 0;
+	prev_x = 0;
+	prev_y = 0;
+	for (finger = 0; finger < 5; finger++) {
+		input_mt_slot(rmi4_data->input_dev, finger);
+		input_mt_report_slot_state(rmi4_data->input_dev,
+				MT_TOOL_FINGER, true);
+		input_report_abs(rmi4_data->input_dev,
+				ABS_MT_POSITION_X, 0);
+		input_report_abs(rmi4_data->input_dev,
+				ABS_MT_POSITION_Y, 0);
+		
+	}
+	/*for (finger = 0; finger < 5; finger++) {
+		rmi4_data->finger_state[finger].x = 0;
+		rmi4_data->finger_state[finger].y = 0;
+		rmi4_data->finger_state[finger].wx = 0;
+		rmi4_data->finger_state[finger].wy = 0;
+		rmi4_data->finger_state[finger].status = false;
+		input_mt_slot(rmi4_data->input_dev, finger);
+		input_mt_report_slot_state(rmi4_data->input_dev,
+				MT_TOOL_FINGER, false);
+	}*/
+	input_sync(rmi4_data->input_dev);
+}
+
 static void reset_device(struct synaptics_rmi4_data *rmi4_data) {
 
 		rmi4_data->touch_stopped = true;
